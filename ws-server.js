@@ -1,15 +1,22 @@
-require('dotenv').config();
+reconst http = require('http');
+quire('dotenv').config();console.log("🧠 Voice AI WebSocket server booting...");
+
 const WebSocket = require('ws');
 const { createClient, LiveTranscriptionEvents } = require('@deepgram/sdk');
 const OpenAI = require('openai').default;
+const http = require('http');
 
 const PORT = process.env.PORT || 8080;
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const wss = new WebSocket.Server({ port: PORT });
+const server = http.createServer();
 
-console.log(`🚀 WebSocket server running on ws://localhost:${PORT}`);
+const wss = new WebSocket.Server({ server });
+
+server.listen(PORT, () => {
+  console.log(`🚀 WebSocket server running on port ${PORT}`);
+});
 
 const script = [
   "Hello! I'm your AI sales assistant. What business do you run?",
