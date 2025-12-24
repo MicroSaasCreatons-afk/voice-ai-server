@@ -1,4 +1,4 @@
-reconst http = require('http');
+const http = require('http');
 quire('dotenv').config();console.log("🧠 Voice AI WebSocket server booting...");
 
 const WebSocket = require('ws');
