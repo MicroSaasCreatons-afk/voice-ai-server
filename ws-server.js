@@ -1,147 +1,74 @@
+require('dotenv').config();
 const http = require('http');
-quire('dotenv').config();console.log("🧠 Voice AI WebSocket server booting...");
-
 const WebSocket = require('ws');
 const { createClient, LiveTranscriptionEvents } = require('@deepgram/sdk');
 const OpenAI = require('openai').default;
-const http = require('http');
 
 const PORT = process.env.PORT || 8080;
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const server = http.createServer();
+// This block handles the initial "Handshake" from Twilio
+const server = http.createServer((req, res) => {
+  // Listen for the root path to prevent 404 errors
+  if (req.url === '/' || req.url === '/voice') {
+    res.writeHead(200, { 'Content-Type': 'text/xml' });
+    res.end(`<?xml version="1.0" encoding="UTF-8"?>
+      <Response>
+        <Say>Hi! Connecting you to your AI assistant.</Say>
+        <Connect>
+          <Stream url="wss://${req.headers.host}/streams" />
+        </Connect>
+      </Response>`);
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
 
 const wss = new WebSocket.Server({ server });
 
-server.listen(PORT, () => {
-  console.log(`🚀 WebSocket server running on port ${PORT}`);
-});
-
-const script = [
-  "Hello! I'm your AI sales assistant. What business do you run?",
-  "Interesting. How many calls do you handle each week?",
-  "Our system can automate all those calls for you. Want to see how?",
-  "Great! I'll send you a trial link. Sound good?",
-  "Perfect! Thanks for testing the AI demo."
-];
-
-wss.on('connection', async (ws) => {
-  console.log('🔗 Client connected');
+wss.on('connection', (ws) => {
+  console.log('🔗 Twilio Phone Call Connected'); // This will now show in Railway logs
   
-  let step = 0;
-  let dgLive = null;
-  let keepAliveInterval = null;
-  
-  try {
-    dgLive = deepgram.listen.live({
-      model: 'nova-2',
-      language: 'en-US',
-      smart_format: true,
-      interim_results: false,
-      encoding: 'linear16',
-      sample_rate: 16000,
-    });
-    
-    dgLive.on(LiveTranscriptionEvents.Open, async () => {
-      console.log('✅ Deepgram connected');
-      
-      // Send welcome message
-      if (step < script.length) {
-        console.log('🤖 Sending welcome:', script[step]);
-        ws.send(`AI:${script[step]}`);
-        const audio = await textToSpeech(script[step]);
-        if (audio) ws.send(audio);
-        step++;
+  // Setup Deepgram for Phone Audio (8000Hz mulaw)
+  const dgLive = deepgram.listen.live({
+    model: 'nova-2',
+    language: 'en-US',
+    smart_format: true,
+    encoding: 'mulaw', 
+    sample_rate: 8000,
+  });
+
+  dgLive.on(LiveTranscriptionEvents.Open, () => {
+    console.log('✅ Deepgram ready to transcribe your voice');
+  });
+
+  // Relay audio packets from Twilio to Deepgram
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      if (data.event === 'media') {
+        dgLive.send(Buffer.from(data.media.payload, 'base64'));
       }
-      
-      // Keep connection alive
-      keepAliveInterval = setInterval(() => {
-        if (dgLive && dgLive.getReadyState() === 1) {
-          dgLive.keepAlive();
-        }
-      }, 3000);
-    });
-    
-    dgLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
-      const transcript = data.channel?.alternatives?.[0]?.transcript;
-      
-      if (transcript && transcript.trim().length > 2) {
-        console.log('👤 User said:', transcript);
-        ws.send(`TRANSCRIPT:${transcript}`);
-        
-        if (step < script.length) {
-          const response = script[step];
-          console.log('🤖 AI responding:', response);
-          ws.send(`AI:${response}`);
-          
-          const audio = await textToSpeech(response);
-          if (audio) {
-            console.log('🔊 Sending audio');
-            ws.send(audio);
-          }
-          
-          step++;
-        } else {
-          ws.send('AI:Conversation complete! Thanks for testing.');
-        }
-      }
-    });
-    
-    dgLive.on(LiveTranscriptionEvents.Error, (error) => {
-      console.error('❌ Deepgram error:', error);
-    });
-    
-    dgLive.on(LiveTranscriptionEvents.Close, () => {
-      console.log('🔌 Deepgram closed');
-      if (keepAliveInterval) clearInterval(keepAliveInterval);
-    });
-    
-    ws.on('message', async (data) => {
-      if (dgLive && dgLive.getReadyState() === 1) {
-        dgLive.send(data);
-      } else {
-        console.log('⚠️ Deepgram not ready, state:', dgLive?.getReadyState());
-      }
-    });
-    
-    ws.on('close', () => {
-      console.log('🔌 Client disconnected');
-      if (keepAliveInterval) clearInterval(keepAliveInterval);
-      if (dgLive) {
-        dgLive.finish();
-      }
-    });
-    
-    ws.on('error', (error) => {
-      console.error('❌ WebSocket error:', error);
-    });
-    
-  } catch (error) {
-    console.error('❌ Setup error:', error);
-    if (keepAliveInterval) clearInterval(keepAliveInterval);
-    ws.close();
-  }
+    } catch (e) {
+      console.error('Error parsing Twilio message:', e);
+    }
+  });
+
+  dgLive.on(LiveTranscriptionEvents.Transcript, (data) => {
+    const transcript = data.channel?.alternatives?.[0]?.transcript;
+    if (transcript && transcript.trim().length > 1) {
+      console.log('👤 User said:', transcript); // You will see your speech here
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('🔌 Twilio call disconnected');
+    dgLive.finish();
+  });
 });
 
-async function textToSpeech(text) {
-  try {
-    const mp3 = await openai.audio.speech.create({
-      model: "tts-1",
-      voice: "shimmer",
-      input: text,
-      speed: 1.0
-    });
-    
-    return Buffer.from(await mp3.arrayBuffer());
-  } catch (error) {
-    console.error('❌ TTS error:', error);
-    return null;
-  }
-}
-
-wss.on('error', (error) => {
-  console.error('❌ WebSocket server error:', error);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 AI Server listening on port ${PORT}`);
 });
-
-console.log('✅ Server ready for connections');
